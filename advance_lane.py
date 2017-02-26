@@ -1,0 +1,322 @@
+import cv2
+import glob
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+
+
+list_images = glob.glob('camera_cal/*')
+img_chess = mpimg.imread(list_images[12])
+plt.imshow(img_chess)
+
+obj_points = []
+img_points = []
+
+nx = 9
+ny = 6
+objp = np.zeros((nx*ny,3),np.float32)
+objp[:,:2] = np.mgrid[0:9,0:6].T.reshape(-1, 2)
+for im_path in list_images:
+    img = mpimg.imread(im_path)
+    
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    ret, corners = cv2.findChessboardCorners(gray,(nx,ny),None)
+    if ret:
+        img_points.append(corners)
+        obj_points.append(objp)
+
+ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(obj_points, img_points, gray.shape[::-1], None, None)
+
+blue_srcp = srcp = np.array([[(505, 470),
+                              (775, 470),
+                              (1420, 720),
+                              (-150, 720)]], dtype=np.int32)
+img_size=(1280, 720)
+dstp = np.float32([[0, 0],
+                    [img_size[0], 0],
+                    [img_size[0], img_size[1]],
+                    [0, img_size[1]]])
+M = cv2.getPerspectiveTransform(np.float32(blue_srcp), dstp)
+Minv = cv2.getPerspectiveTransform(dstp, np.float32(blue_srcp))
+#warped = cv2.warpPerspective(section_image_red, M, img_size)
+
+ksize = 3
+
+# functions to get a good mask for an image
+def abs_sobel_thresh(img, orient='x', sobel_kernel=3, thresh=(0, 255)):
+    # Calculate directional gradient
+    # Apply threshold
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    if orient=='x':
+        sobel = cv2.Sobel(gray, cv2.CV_64F, 1, 0)
+    else:
+        sobel = cv2.Sobel(gray, cv2.CV_64F, 0, 1)
+    abs_sobel = np.absolute(sobel)
+
+    scaled_sobel = np.uint8(255*(abs_sobel/np.max(abs_sobel)))
+
+    binary_output = scaled_sobel > thresh[0]
+    binary_output = binary_output*(scaled_sobel < thresh[1])
+    return binary_output
+
+
+def mag_thresh(image, sobel_kernel=3, mag_thresh=(0, 255)):
+    # Calculate gradient magnitude
+    # Apply threshold
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    sobelx = cv2.Sobel(gray,cv2.CV_64F, 1, 0,ksize=sobel_kernel)
+    sobely = cv2.Sobel(gray,cv2.CV_64F, 0, 1,ksize=sobel_kernel)
+    abs_sobel = np.sqrt(np.power(sobelx, 2) + np.power(sobely, 2))
+    scaled_sobel = np.uint8(255*(abs_sobel/np.max(abs_sobel)))
+    binary_output = scaled_sobel > mag_thresh[0]
+    binary_output = binary_output*(scaled_sobel < mag_thresh[1])
+    return binary_output
+
+
+def dir_threshold(image, sobel_kernel=3, thresh=(0, np.pi/2)):
+    # Calculate gradient direction
+    # Apply threshold
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    sobelx = cv2.Sobel(gray,cv2.CV_64F, 1, 0,ksize=sobel_kernel)
+    sobely = cv2.Sobel(gray,cv2.CV_64F, 0, 1,ksize=sobel_kernel)
+    angle_sobel = np.arctan2(np.absolute(sobely), np.absolute(sobelx))
+    binary_output = angle_sobel > thresh[0]
+    binary_output = binary_output*(angle_sobel < thresh[1])
+    return binary_output
+
+
+def filter_l_select(img, thresh=(0, 255)):
+    # 1) Convert to HLS color space
+    # 2) Apply a threshold to the S channel
+    hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    l_ch = hls[:,:,1]
+    binary_output = np.zeros_like(l_ch)
+    binary_output[(l_ch > thresh[0]) & (l_ch <= thresh[1])] = 1
+    return binary_output
+
+
+def filter_s_select(img, thresh=(0, 255)):
+    # 1) Convert to HLS color space
+    # 2) Apply a threshold to the S channel
+    hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    s_ch = hls[:,:,2]
+    binary_output = np.zeros_like(s_ch)
+    binary_output[(s_ch > thresh[0]) & (s_ch <= thresh[1])] = 1
+    return binary_output
+
+
+
+font = cv2.FONT_HERSHEY_SIMPLEX
+
+# get right and left polynomial curves
+def get_xy_points_curve(binary_warped):
+
+    histogram = np.sum(binary_warped[int(binary_warped.shape[0]/2):,:], axis=0)
+    # Create an output image to draw on and  visualize the result
+    out_img = np.dstack((binary_warped, binary_warped, binary_warped))*255
+    # Find the peak of the left and right halves of the histogram
+    # These will be the starting point for the left and right lines
+    midpoint = np.int(histogram.shape[0]/2)
+    leftx_base = np.argmax(histogram[:midpoint])
+    rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+
+    # Choose the number of sliding windows
+    nwindows = 9
+    # Set height of windows
+    window_height = np.int(binary_warped.shape[0]/nwindows)
+    # Identify the x and y positions of all nonzero pixels in the image
+    nonzero = binary_warped.nonzero()
+    nonzeroy = np.array(nonzero[0])
+    nonzerox = np.array(nonzero[1])
+    # Current positions to be updated for each window
+    leftx_current = leftx_base
+    rightx_current = rightx_base
+    # Set the width of the windows +/- margin
+    margin = 100
+    # Set minimum number of pixels found to recenter window
+    minpix = 50
+    # Create empty lists to receive left and right lane pixel indices
+    left_lane_inds = []
+    right_lane_inds = []
+
+    # Step through the windows one by one
+    for window in range(nwindows):
+        # Identify window boundaries in x and y (and right and left)
+        win_y_low = binary_warped.shape[0] - (window+1)*window_height
+        win_y_high = binary_warped.shape[0] - window*window_height
+        win_xleft_low = leftx_current - margin
+        win_xleft_high = leftx_current + margin
+        win_xright_low = rightx_current - margin
+        win_xright_high = rightx_current + margin
+        # Draw the windows on the visualization image
+        cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,255,0), 2) 
+        cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,255,0), 2) 
+        # Identify the nonzero pixels in x and y within the window
+        good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
+        good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+        # Append these indices to the lists
+        left_lane_inds.append(good_left_inds)
+        right_lane_inds.append(good_right_inds)
+        # If you found > minpix pixels, recenter next window on their mean position
+        if len(good_left_inds) > minpix:
+            leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
+        if len(good_right_inds) > minpix:        
+            rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
+
+    # Concatenate the arrays of indices
+    left_lane_inds = np.concatenate(left_lane_inds)
+    right_lane_inds = np.concatenate(right_lane_inds)
+
+    # Extract left and right line pixel positions
+    leftx = nonzerox[left_lane_inds]
+    lefty = nonzeroy[left_lane_inds] 
+    rightx = nonzerox[right_lane_inds]
+    righty = nonzeroy[right_lane_inds]
+    return leftx, lefty, rightx, righty
+
+
+class Line():
+    def __init__(self):
+        # was the line detected in the last iteration?
+        self.detected = False  
+        # x values of the last n fits of the line
+        self.recent_xfitted = [] 
+        #average x values of the fitted line over the last n iterations
+        self.bestx = None  
+        #polynomial coefficients averaged over the last n iterations
+        self.best_fit = None  
+        #polynomial coefficients for the most recent fit
+        self.current_fit = [np.array([False])]  
+        #radius of curvature of the line in some units
+        self.radius_of_curvature = None 
+        #distance in meters of vehicle center from the line
+        self.line_base_pos = None 
+        #difference in fit coefficients between last and new fits
+        self.diffs = np.array([0,0,0], dtype='float') 
+        #x values for detected line pixels
+        self.allx = None  
+        #y values for detected line pixels
+        self.ally = None
+    def update_coef_and_x(self, fit_detected, x_detected):
+        if (len(self.current_fit) <= 3):
+            self.current_fit.append(fit_detected)
+            self.recent_xfitted.append(x_detected)
+        else:
+            self.current_fit.append(fit_detected)
+            self.recent_xfitted.append(x_detected)
+            del self.current_fit[0]
+            del self.recent_xfitted[0]
+        self.bestx = np.mean(self.recent_xfitted, axis=0)
+        self.best_fit = np.mean(self.current_fit, axis=0)
+
+
+    def get_diff_x(self, x_detected):
+        if len(self.recent_xfitted) > 2:
+            average_diff = np.mean(np.abs(self.bestx - x_detected))
+            return average_diff
+
+
+left_line = Line()
+right_line = Line()
+def process_frame(input_image):
+    # pipeline here
+    
+    # remove distorsion from image
+    img_road_undist = cv2.undistort(input_image, mtx, dist, None, mtx)
+    
+    # threshold image
+    gradx = abs_sobel_thresh(img_road_undist, orient='x', sobel_kernel=ksize, thresh=(20, 190))
+    grady = abs_sobel_thresh(img_road_undist, orient='y', sobel_kernel=ksize, thresh=(30, 190))
+    s_binary = filter_s_select(img_road_undist, thresh=(150,255))
+    l_binary = filter_l_select(img_road_undist, thresh=(190,250))
+    
+    combined = np.zeros_like(s_binary)
+    combined[((gradx == 1) & (grady == 1)) | (s_binary == 1) | (l_binary == 1)] = 1
+    combined_gray = np.uint8(255*combined)
+
+    # perspective transformation
+    warped_binarized = cv2.warpPerspective(combined_gray, M, (img_road_undist.shape[1], img_road_undist.shape[0]))
+    binary_warped = warped_binarized.copy()
+
+    # get x and y coordinates for each line
+    leftx, lefty, rightx, righty = get_xy_points_curve(binary_warped)
+
+    # Fit a second order polynomial to each
+    left_fit = np.polyfit(lefty, leftx, 2)
+    right_fit = np.polyfit(righty, rightx, 2)
+
+    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0])
+    left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+    right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+
+    # measure the average difference between p
+    diff_r = right_line.get_diff_x(right_fitx)
+    print("diff in right", diff_r)
+    diff_l = left_line.get_diff_x(left_fitx)
+    print("diff in left", diff_l)
+    if len(right_line.recent_xfitted) > 2:
+        if diff_r < 160:
+            right_line.update_coef_and_x(right_fit, right_fitx)
+        if diff_l < 160:
+            left_line.update_coef_and_x(left_fit, left_fitx)
+    else:
+        right_line.update_coef_and_x(right_fit, right_fitx)
+        left_line.update_coef_and_x(left_fit, left_fitx)
+    
+    left_fitx = left_line.best_fit[0]*ploty**2 + left_line.best_fit[1]*ploty + left_line.best_fit[2]
+    right_fitx = right_line.best_fit[0]*ploty**2 + right_line.best_fit[1]*ploty + right_line.best_fit[2]
+
+    # Create an image to draw the lines on
+    warp_zero = np.zeros_like(binary_warped).astype(np.uint8)
+    color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+
+    color_warp[lefty, leftx] = [255, 0, 0]
+    color_warp[righty, rightx] = [0, 0, 255]
+
+    # Recast the x and y points into usable format for cv2.fillPoly()
+    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
+    pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+    pts = np.hstack((pts_left, pts_right))
+
+    # Draw the lane onto the warped blank image
+    cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
+
+    # Warp the blank back to original image space using inverse perspective matrix (Minv)
+    newwarp = cv2.warpPerspective(color_warp, Minv, (img_road_undist.shape[1], img_road_undist.shape[0]))
+
+    # Combine the result with the original image
+    output_image = cv2.addWeighted(img_road_undist, 1, newwarp, 0.3, 0)
+
+    #compute the curvature
+    y_eval = np.max(ploty)
+    ym_per_pix = 30.0/720 # meters per pixel in y dimension
+    xm_per_pix = 3.7/700 # meters per pixel in x dimension
+
+    # Fit new polynomials to x,y in world space
+    left_fit_cr = np.polyfit(ploty*ym_per_pix, left_fitx*xm_per_pix, 2)
+    right_fit_cr = np.polyfit(ploty*ym_per_pix, right_fitx*xm_per_pix, 2)
+    # Calculate the new radii of curvature
+    left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
+    right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
+
+    cv2.putText(output_image,'curvature: {0} m'.format(int(left_curverad)),(10,70), font, 2,(255,255,255),2)
+
+    #how far is the car frm the middle of the road
+    x1_meters = left_fitx[-1]*xm_per_pix
+    x2_meters = right_fitx[-1]*xm_per_pix
+    my_x = (warped_binarized.shape[1]/2)*xm_per_pix
+    x_middle_meters = (x1_meters + x2_meters)/2
+    cv2.putText(output_image,'away from left {0:.2f}'.format(my_x - x_middle_meters),(10,200), font, 1.6,(255,255,255),2)
+    return output_image
+
+video_capture = cv2.VideoCapture('/home/darial/udacar/CarND-Advanced-Lane-Lines/project_video.mp4')
+
+while True:
+    # Capture frame-by-frame
+    ret, frame = video_capture.read()
+    cv2.imshow("normal frame",cv2.resize(frame,(640,480)))
+    output_image = process_frame(frame)
+    cv2.imshow("processed frame", cv2.resize(output_image,(640,480)))
+
+    if cv2.waitKey(0) & 0xFF == ord('q'):
+        break
