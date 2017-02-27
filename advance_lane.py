@@ -5,10 +5,8 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 
 
+# perform camera calibration uing chessboard images
 list_images = glob.glob('camera_cal/*')
-img_chess = mpimg.imread(list_images[12])
-plt.imshow(img_chess)
-
 obj_points = []
 img_points = []
 
@@ -16,6 +14,7 @@ nx = 9
 ny = 6
 objp = np.zeros((nx*ny,3),np.float32)
 objp[:,:2] = np.mgrid[0:9,0:6].T.reshape(-1, 2)
+
 for im_path in list_images:
     img = mpimg.imread(im_path)
     
@@ -24,13 +23,14 @@ for im_path in list_images:
     if ret:
         img_points.append(corners)
         obj_points.append(objp)
-
 ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(obj_points, img_points, gray.shape[::-1], None, None)
 
-blue_srcp = srcp = np.array([[(505, 470),
-                              (775, 470),
-                              (1420, 720),
-                              (-150, 720)]], dtype=np.int32)
+
+# perform perspective transformation
+blue_srcp = np.array([[(505, 470),
+                       (775, 470),
+                       (1420, 720),
+                       (-150, 720)]], dtype=np.int32)
 img_size=(1280, 720)
 dstp = np.float32([[0, 0],
                     [img_size[0], 0],
@@ -38,7 +38,6 @@ dstp = np.float32([[0, 0],
                     [0, img_size[1]]])
 M = cv2.getPerspectiveTransform(np.float32(blue_srcp), dstp)
 Minv = cv2.getPerspectiveTransform(dstp, np.float32(blue_srcp))
-#warped = cv2.warpPerspective(section_image_red, M, img_size)
 
 ksize = 3
 
@@ -111,6 +110,8 @@ font = cv2.FONT_HERSHEY_SIMPLEX
 # get right and left polynomial curves
 def get_xy_points_curve(binary_warped):
 
+	'''from udacity course'''
+
     histogram = np.sum(binary_warped[int(binary_warped.shape[0]/2):,:], axis=0)
     # Create an output image to draw on and  visualize the result
     out_img = np.dstack((binary_warped, binary_warped, binary_warped))*255
@@ -178,27 +179,29 @@ def get_xy_points_curve(binary_warped):
 class Line():
     def __init__(self):
         # was the line detected in the last iteration?
-        self.detected = False  
+        self.detected = False
         # x values of the last n fits of the line
-        self.recent_xfitted = [] 
+        self.recent_xfitted = []
         #average x values of the fitted line over the last n iterations
-        self.bestx = None  
+        self.bestx = None
         #polynomial coefficients averaged over the last n iterations
-        self.best_fit = None  
+        self.best_fit = None
         #polynomial coefficients for the most recent fit
-        self.current_fit = [np.array([False])]  
+        self.current_fit = []
         #radius of curvature of the line in some units
-        self.radius_of_curvature = None 
+        self.radius_of_curvature = None
         #distance in meters of vehicle center from the line
-        self.line_base_pos = None 
+        self.line_base_pos = None
         #difference in fit coefficients between last and new fits
-        self.diffs = np.array([0,0,0], dtype='float') 
+        self.diffs = np.array([0,0,0], dtype='float')
         #x values for detected line pixels
-        self.allx = None  
+        self.allx = None
         #y values for detected line pixels
         self.ally = None
+
+
     def update_coef_and_x(self, fit_detected, x_detected):
-        if (len(self.current_fit) <= 3):
+        if len(self.current_fit) <= 3:
             self.current_fit.append(fit_detected)
             self.recent_xfitted.append(x_detected)
         else:
@@ -218,6 +221,8 @@ class Line():
 
 left_line = Line()
 right_line = Line()
+
+
 def process_frame(input_image):
     # pipeline here
     
@@ -227,8 +232,8 @@ def process_frame(input_image):
     # threshold image
     gradx = abs_sobel_thresh(img_road_undist, orient='x', sobel_kernel=ksize, thresh=(20, 190))
     grady = abs_sobel_thresh(img_road_undist, orient='y', sobel_kernel=ksize, thresh=(30, 190))
-    s_binary = filter_s_select(img_road_undist, thresh=(150,255))
-    l_binary = filter_l_select(img_road_undist, thresh=(190,250))
+    s_binary = filter_s_select(img_road_undist, thresh=(150, 255))
+    l_binary = filter_l_select(img_road_undist, thresh=(190, 250))
     
     combined = np.zeros_like(s_binary)
     combined[((gradx == 1) & (grady == 1)) | (s_binary == 1) | (l_binary == 1)] = 1
@@ -237,6 +242,8 @@ def process_frame(input_image):
     # perspective transformation
     warped_binarized = cv2.warpPerspective(combined_gray, M, (img_road_undist.shape[1], img_road_undist.shape[0]))
     binary_warped = warped_binarized.copy()
+
+    cv2.imshow("binary lines", cv2.resize(binary_warped, (640, 480)))
 
     # get x and y coordinates for each line
     leftx, lefty, rightx, righty = get_xy_points_curve(binary_warped)
@@ -281,6 +288,8 @@ def process_frame(input_image):
     # Draw the lane onto the warped blank image
     cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
 
+    cv2.imshow("road lines", cv2.resize(color_warp, (640, 480)))
+
     # Warp the blank back to original image space using inverse perspective matrix (Minv)
     newwarp = cv2.warpPerspective(color_warp, Minv, (img_road_undist.shape[1], img_road_undist.shape[0]))
 
@@ -298,7 +307,6 @@ def process_frame(input_image):
     # Calculate the new radii of curvature
     left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
     right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
-
     cv2.putText(output_image,'curvature: {0} m'.format(int(left_curverad)),(10,70), font, 2,(255,255,255),2)
 
     #how far is the car frm the middle of the road
@@ -306,10 +314,15 @@ def process_frame(input_image):
     x2_meters = right_fitx[-1]*xm_per_pix
     my_x = (warped_binarized.shape[1]/2)*xm_per_pix
     x_middle_meters = (x1_meters + x2_meters)/2
-    cv2.putText(output_image,'away from left {0:.2f}'.format(my_x - x_middle_meters),(10,200), font, 1.6,(255,255,255),2)
+    off_road_center = my_x - x_middle_meters
+    if  off_road_center > 0:
+        cv2.putText(output_image,'car is {0:.2f} right of center'.format(off_road_center),(10,130), font, 1.6,(255,255,255),2)
+    else:
+        cv2.putText(output_image,'car is {0:.2f} left of center'.format(-1*off_road_center),(10,130), font, 1.6,(255,255,255),2)
     return output_image
 
-video_capture = cv2.VideoCapture('/home/darial/udacar/CarND-Advanced-Lane-Lines/project_video.mp4')
+
+video_capture = cv2.VideoCapture('./project_video.mp4')
 
 while True:
     # Capture frame-by-frame
